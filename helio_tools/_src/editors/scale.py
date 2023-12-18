@@ -22,16 +22,72 @@ Dependencies:
 Note: This module is designed to work with solar data and may not be applicable to other types of astronomical data.
 """
 
-from typing import Callable
+from typing import Callable, Optional
 from sunpy.map import Map
 import warnings
 from astropy.coordinates import SkyCoord
 from astropy import units as u
 import numpy as np
+from dataclasses import dataclass
+from astropy.visualization import stretch
+from astropy.visualization import AsinhStretch, ImageNormalize
+
+
+@dataclass
+class MapImageNormalize:
+    """
+    A class that provides image normalization for maps.
+
+    Attributes:
+        stretch (stretch): The stretch function to be applied during normalization.
+        vmin (int | float): The minimum value for normalization.
+        vmax (int | float): The maximum value for normalization.
+        clip (bool, optional): Whether to clip the values outside the range [vmin, vmax]. Defaults to True.
+        invalid (float, optional): The value to be considered as invalid during normalization. Defaults to None.
+    """
+
+    stretch: stretch
+    vmin: int | float
+    vmax: int | float
+    clip: bool = True
+    invalid: Optional[float] = None
+
+    @property
+    def normalize(self):
+        """
+        Get the ImageNormalize object with the specified normalization parameters.
+
+        Returns:
+            ImageNormalize: The ImageNormalize object.
+        """
+        return ImageNormalize(
+            vmin=self.vmin,
+            vmax=self.vmax,
+            stretch=self.stretch,
+            clip=self.clip,
+            invalid=self.invalid,
+        )
+
+    def __call__(self, s_map: Map) -> Map:
+        """
+        Normalize the given map using the specified normalization parameters.
+
+        Args:
+            s_map (Map): The map to be normalized.
+
+        Returns:
+            Map: The normalized map.
+        """
+        # extract data from map
+        data: np.ndarray = s_map.data
+        # convert
+        data: np.ndarray = self.normalize(data)
+        # reconvert to map array
+        return Map(data, s_map.fits_header)
 
 
 def normalize_fn(data: np.ndarray, fn: Callable) -> np.ndarray:
-    """Normalizes the data array using the provided function. 
+    """Normalizes the data array using the provided function.
     The function should take a numpy array as input and return a numpy array.
 
     Args:
@@ -46,18 +102,18 @@ def normalize_fn(data: np.ndarray, fn: Callable) -> np.ndarray:
     >>> import numpy as np
     >>> data = np.random.rand(100, 100)
     >>> fn = np.sin
-    >>> norm_data = ht.normalize_fn(data, fn)    
+    >>> norm_data = ht.normalize_fn(data, fn)
     """
     return 2 * fn(data).data - 1
 
 
 def normalize_radius(
-        s_map: Map,
-        resolution: int,
-        padding_factor: float = 0.1,
-        crop: bool = True,
+    s_map: Map,
+    resolution: int,
+    padding_factor: float = 0.1,
+    crop: bool = True,
 ) -> Map:
-    """ 
+    """
     Normalizes the radius of the solar map to a specified resolution.
 
     Args:
@@ -73,7 +129,7 @@ def normalize_radius(
     >>> import helio_tools as ht
     >>> import numpy as np
     >>> s_map = ht.load_fits_to_map(filename)
-    >>> norm_map = ht.normalize_radius(s_map, 512)    
+    >>> norm_map = ht.normalize_radius(s_map, 512)
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -81,20 +137,16 @@ def normalize_radius(
         r_obs_pix = (1 + padding_factor) * r_obs_pix
         scale_factor = resolution / (2 * r_obs_pix.value)
         s_map = Map(np.nan_to_num(s_map.data).astype(np.float32), s_map.meta)
-        s_map = s_map.rotate(
-            recenter=True, scale=scale_factor, missing=0, order=4)
+        s_map = s_map.rotate(recenter=True, scale=scale_factor, missing=0, order=4)
         if crop:
             s_map = _crop_resolution(s_map, resolution=resolution)
-        s_map.meta['r_sun'] = s_map.rsun_obs.value / s_map.meta['cdelt1']
+        s_map.meta["r_sun"] = s_map.rsun_obs.value / s_map.meta["cdelt1"]
 
         return s_map
 
 
-def _crop_resolution(
-        s_map: Map,
-        resolution: int
-) -> Map:
-    """Crops the solar map to the specified resolution. 
+def _crop_resolution(s_map: Map, resolution: int) -> Map:
+    """Crops the solar map to the specified resolution.
     This is a helper function used within normalize_radius.
 
     Args:
@@ -116,12 +168,23 @@ def _crop_resolution(
         warnings.simplefilter("ignore")
         arcs_frame = (resolution / 2) * s_map.scale[0].value
         s_map = s_map.submap(
-            bottom_left=SkyCoord(-arcs_frame * u.arcsec, -
-                                 arcs_frame * u.arcsec, frame=s_map.coordinate_frame),
-            top_right=SkyCoord(arcs_frame * u.arcsec, arcs_frame * u.arcsec, frame=s_map.coordinate_frame))
+            bottom_left=SkyCoord(
+                -arcs_frame * u.arcsec,
+                -arcs_frame * u.arcsec,
+                frame=s_map.coordinate_frame,
+            ),
+            top_right=SkyCoord(
+                arcs_frame * u.arcsec,
+                arcs_frame * u.arcsec,
+                frame=s_map.coordinate_frame,
+            ),
+        )
         pad_x = s_map.data.shape[0] - resolution
         pad_y = s_map.data.shape[1] - resolution
-        s_map = s_map.submap(bottom_left=[pad_x // 2, pad_y // 2] * u.pix,
-                             top_right=[pad_x // 2 + resolution - 1, pad_y // 2 + resolution - 1] * u.pix)
+        s_map = s_map.submap(
+            bottom_left=[pad_x // 2, pad_y // 2] * u.pix,
+            top_right=[pad_x // 2 + resolution - 1, pad_y // 2 + resolution - 1]
+            * u.pix,
+        )
 
         return s_map
